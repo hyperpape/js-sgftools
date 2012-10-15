@@ -2,15 +2,18 @@
 // It's designed to be usable from either a browser or from
 // NodeJS.
 
-// Note the lack of error handling (requests time out and the callback
-// never fires), so it's only useful for short requests.
-
-// target is the document for the page we already have open
-
 if (typeof exports !== 'undefined') {
-    var _ = require('underscore.js');
+    var _ = require('underscore');
 }
 
+// once these error limits are reached, cease trying
+
+// for all urls together
+var TOTAL_ERROR_LIMIT = 2;
+// for a single error
+var URL_ERROR_LIMIT = 2;
+
+// target is the document for the page we already have open
 function getL19Thread (target, requestMethod, callback) {
     var stack = new Stack(requestMethod, callback);
     stack.handle(target, target.URL);
@@ -25,6 +28,9 @@ function Stack(requestMethod, callback) {
     this.pending = [];          // unscraped
     this.inProgress = {};       // ongoing requests
     this.diagrams = [];
+
+    this.totalErrors = 0;
+    this.urlErrors = {};
 }
 
 Stack.prototype.handle = function (result, url) {
@@ -34,15 +40,29 @@ Stack.prototype.handle = function (result, url) {
     this.dispatch();
 };
 
-Stack.prototype.error = function (url) {
-    if (this.errors[url]) {
-        this.errors[url]++;
+Stack.prototype.onError = function (url) {
+    this.totalErrors++;
+    if (this.urlErrors[url]) {
+        this.urlErrors[url]++;
     } else {
-        this.errors[url] = 1;
+        this.urlErrors[url] = 1;
     }
-
-    this.pending.push(url);
+    this.handleError(url);
 }
+
+Stack.prototype.handleError = function (url) {
+    if (this.urlErrors[url] >= URL_ERROR_LIMIT) {
+        throw new Error("This script is aborting.\n" +
+                        "url: " + url + " cannot be retrieved after " +
+                        URL_ERROR_LIMIT + " tries.");
+    } else if (this.totalErrors >= TOTAL_ERROR_LIMIT) {
+        throw new Error("This script is aborting after " + TOTAL_ERROR_LIMIT +
+                        " errors retrieving pages.");
+    } else {
+        this.pending.push(url);
+        this.dispatch();
+    }
+};
 
 Stack.prototype.extract = function (target) {
     this.diagrams.push.apply(this.diagrams, extractL19Diagrams(target));
@@ -80,7 +100,7 @@ Stack.prototype.dispatch = function () {
 };
 
 Stack.prototype.waiting = function () {
-    for (var elem in this.inProgress) {
+    if (_.size(this.inProgress) > 0) {
         return true;
     }
     return false;
@@ -98,15 +118,15 @@ function getL19ThreadURLs (page) {
 
     // window will be defined in the browser, but not in Node
     if (typeof window !== 'undefined') {
-        console.log(window.location.href);
+        console.log(window.location.href); // needs comment
         var threadOrigin = window.location.href.match(pageURL)[1];
     } else {
         threadOrigin = page.location.href.match(pageURL)[1];
     }
 
-    links = filter(links, function (link) {
+    links = _.filter(links, function (link) {
         return link.href.indexOf(threadOrigin) !== -1; });
-    return makeSet(_.map(canonURL, links));
+    return _uniq(_.map(links, canonURL));
 }
 
 // &sid=hexadecimal portion of the URL appears when not logged in
@@ -132,7 +152,7 @@ function canonURL (link) {
 
 function extractL19Diagrams (node) {
     // returns strings that may be diagrams from an L19 page
-    return _.map(extractDiagram, node.getElementsByClassName('codebox'));
+    return _.map(node.getElementsByClassName('codebox'), extractDiagram);
 }
 
 function extractDiagram (node) {
@@ -143,12 +163,7 @@ function extractDiagram (node) {
 }
 
 function joinDataNodes (nodes, separator) {
-    var results = [];
-    for (var i = 0; i < nodes.length; i++) {
-        if (nodes[i].data){
-            results.push(nodes[i].data);
-        }
-    }
+    var results = _.filter(nodes, function (node) { return node.data; });
     return results.join(separator);
 }
 
@@ -192,4 +207,8 @@ function addExtractionLink (callback) {
 
 if (this.XMLHttpRequest && window.location.href.match(pageURL)) {
     addExtractionLink(function (diagrams) { makeSGF(makeSet(diagrams)); } );
+}
+
+if (typeof exports !== 'undefined') {
+    exports.getL19Thread = getL19Thread;
 }
